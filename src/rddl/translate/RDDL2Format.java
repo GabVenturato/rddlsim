@@ -11,6 +11,8 @@ package rddl.translate;
 
 import java.io.*;
 import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import dd.discrete.ADD;
 import dd.discrete.DD;
@@ -46,6 +48,7 @@ public class RDDL2Format {
 	public final static String SPUDD_CONT      = "spudd_cont".intern();
 	public final static String SPUDD_CONT_CONC = "spudd_cont_conc".intern();
 	public final static String PPDDL           = "ppddl".intern();
+	public final static String MAPLCIRUP       = "mapl-cirup".intern();
 		
 	public State      _state;
 	public INSTANCE   _i;
@@ -128,10 +131,17 @@ public class RDDL2Format {
 			else
 				_filename = _filename + ".po-ppddl";
 		} else {
-			if (!_d._bPartiallyObserved)
-				_filename = _filename + ".spudd";
-			else
-				_filename = _filename + ".sperseus";
+			if (_sTranslationType == MAPLCIRUP) {
+				if (!_d._bPartiallyObserved)
+					_filename = _filename + ".pl";
+				else
+					throw new Exception("Instance '" + instance_name + "' is a POMDP: not supported by mapl-cirup.");
+			} else {
+				if (!_d._bPartiallyObserved)
+					_filename = _filename + ".spudd";
+				else
+					_filename = _filename + ".sperseus";
+			}
 		}
 		
 		File f = new File(_filename);
@@ -180,12 +190,103 @@ public class RDDL2Format {
 			exportSPUDD(pw, false, true);
 		else if (_sTranslationType == PPDDL ) 
 			exportPPDDL(pw);
+		else if (_sTranslationType == MAPLCIRUP)
+			exportMAPLCIRUP(pw);
 		else
 			throw new Exception(_sTranslationType + " not currently supported.");
 		
 		pw.close();
 		System.out.println("\n>> Exported: '" + _filename + "'");
 	}
+
+	public void exportMAPLCIRUP(PrintWriter pw) {
+		PW = pw;
+		pw.println("% Automatically produced by rddl.translate.RDDL2Format");
+		pw.println("% mapl-cirup Format for '" + _d._sDomainName + "." + _i._sName + "'");
+
+		Function<String, String> prolog_neg = x -> x.startsWith("~") ? x.replace("~", "\\+") : x;
+
+		// Actions
+		pw.println("\n\n% ACTIONS");
+		List<String> actions = _hmActionMap.keySet().stream().map(x -> "?::" + x).toList();
+		String actions_str = String.join("; ", actions);
+		pw.println(actions_str + ".");
+
+		// State variables
+		String state_vars_str = String.join(", ", _alStateVars);
+		pw.println("\n\n% STATE VARIABLES");
+		pw.println("state_variables(" + state_vars_str + ").");
+
+		// Discount and Horizon
+		pw.println("\n\n% PARAMETERS");
+		pw.println("\ndiscount(" + _i._dDiscount + ").");
+		pw.println("horizon(" + _i._nHorizon + ").");
+
+		// CPTs
+		pw.println("\n\n% TRANSITION");
+		for (String action_name : _hmActionMap.keySet()) {
+			for (String var : _alStateVars) {
+				int dd = _var2transDD.get(new Pair<>(action_name, var));
+				_context.enumeratePaths(dd,
+					new ADD.ADDLeafOperation() {
+						public void processADDLeaf(ArrayList<String> assign, double leaf_val) {
+							// boolean print_true_effect = (!assign.contains(S) && (leaf_val > 0d));
+							// boolean print_false_effect = (!assign.contains("~" + S) && (leaf_val < 1d));
+							// if (!print_true_effect && !print_false_effect)
+							// 	return;
+							if (leaf_val == 0d)
+									return;
+
+							if (assign.size() > 0) {
+									assign.add(action_name);
+									List<String> var_assign = assign
+										.stream()
+										.map(prolog_neg)
+										.toList();
+									PW.println(leaf_val + "::x(" + var + ") :- " + String.join(", ", var_assign) + ".");
+							}
+							
+							// PW.print("(probabilistic ");
+							// if (print_true_effect)
+							// 	PW.print(leaf_val + " (" + S + ") ");
+							// if (print_false_effect)
+							// 	PW.print((1d - leaf_val) + " (not " + "(" + S + ")" + ")");
+            }
+        });
+      }
+    }
+
+		// Reward
+		pw.println("\n\n% REWARD");
+		for (String action_name : _hmActionMap.keySet()) {
+			ArrayList<Integer> rewards = _act2rewardDD.get(action_name);
+			if (rewards.size() > 0) {
+				for (int reward_dd : rewards) {
+					_context.enumeratePaths(reward_dd,
+						new ADD.ADDLeafOperation() {
+							public void processADDLeaf(ArrayList<String> assign, double leaf_val) {
+								if (leaf_val == 0d)
+									return;
+
+								if (assign.size() == 0) {
+									PW.println("utility(" + action_name + ", " + leaf_val + ").");
+								} else {
+									assign.add(action_name);
+									List<String> r_assign = assign
+										.stream()
+										.map(prolog_neg)
+										.toList();
+									String r_var = "r_" + action_name + "_" + reward_dd;
+									PW.println(r_var + " :- " + String.join(", ", r_assign) + ".");
+									PW.println("utility(" + r_var + ", " + leaf_val + ").");
+								}
+							}
+					});
+				}
+			}
+		}
+
+  }
 	
 	public void exportSPUDD(PrintWriter pw, boolean curr_format, boolean allow_conc) {
 		exportSPUDD(pw, curr_format, allow_conc, true);
@@ -201,7 +302,7 @@ public class RDDL2Format {
 			pw.println("\t(" + s + " true false)");
 		if (allow_conc)
 			for (String a : _hmActionMap.keySet())
-				pw.println("\t(" + a + " true false)");
+				pw.println("\t(" + a + " true false)"); // TODO: What are these?
 		pw.println(")");
 		
 		// Observations
@@ -216,14 +317,14 @@ public class RDDL2Format {
 		// Initial state
 		if (export_init_block) {
 			HashMap<String,Boolean> init_state_assign = new HashMap<String,Boolean>();
-			for (PVAR_INST_DEF def : _i._alInitState) {	
+			for (PVAR_INST_DEF def : _i._alInitState) {
 				// Get the assignments for this PVAR
 				init_state_assign.put(CleanFluentName(def._sPredName.toString() + def._alTerms),
 						(Boolean)def._oValue);
 			}
 			pw.println("\ninit [*");
 			for (String s : _alStateVars) {
-				
+
 				Boolean bval = init_state_assign.get(s);
 				if (bval == null) { // No assignment, get default value
 					// This is a quick fix... a bit ugly
@@ -588,6 +689,7 @@ public class RDDL2Format {
 		// Verify no intermediate variables
 		if (_state._tmIntermNames.size() > 0)
 			throw new Exception("Cannot convert to SPUDD format: contains intermediate variables");
+        // TODO: Understand what this above is
 
 		// Should verify that max-nondef-actions is 1 for non-concurrent versions.
 //		if (_i._nNonDefActions > 1 
@@ -1223,6 +1325,7 @@ public class RDDL2Format {
 		System.out.println("  ppddl (version used in IPPC 2011)");
 		System.out.println("  spudd_orig (an older SPUDD format, not readable by latest versions of SPUDD)");
 		System.out.println("  spudd_conc (SPUDD format supporting concurrency)");
+        System.out.println("  mapl-cirup (mapl-cirup format, for fully observable MDPs only)");
 	}
 	
 	/**
@@ -1246,7 +1349,8 @@ public class RDDL2Format {
 				arg2_intern != SPUDD_CURR &&
 				arg2_intern != SPUDD_CURR_NOINIT &&
 				arg2_intern != SPUDD_CONC &&
-				arg2_intern != PPDDL ) {
+				arg2_intern != PPDDL &&
+                arg2_intern != MAPLCIRUP) {
 			System.out.println("\nFile format '" + arg2_intern + "' not supported yet.\n");
 			ShowFileFormats();
 			System.exit(2);
