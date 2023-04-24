@@ -1,3 +1,7 @@
+#### Translate to mapl-cirup
+
+Just compile with `./compile` and run `./run rddl.translate.RDDL2Format rddl-inputs/ mapl-cirup-outputs/ mapl-cirup`.
+
 #### Java RDDLSim (this repo)
 
 Implements a parser, simulator, and client/server evaluation architecture for the relational dynamic influence diagram language (RDDL) -- pronounced "riddle". RDDL is intended to compactly support the representation of a wide range of relational MDPs and POMDPs and support the efficient simulation of these domains. RDDL is used in a number of past and present **International Probabilistic Planning Competitions (IPPCs)**:
